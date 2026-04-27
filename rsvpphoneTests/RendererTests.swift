@@ -12,7 +12,23 @@ final class RendererTests: XCTestCase {
 
     func testRendererProducesLogicalImage() {
         let renderer = RsvpRenderer()
-        let image = renderer.render(RenderContext(
+        let image = renderer.render(renderContext())
+        XCTAssertEqual(image.size.width, 640)
+        XCTAssertEqual(image.size.height, 172)
+        XCTAssertGreaterThan(nonBackgroundPixelCount(image), 100)
+    }
+
+    func testRendererProducesViewportSizedImage() {
+        let renderer = RsvpRenderer()
+        let viewportSize = CGSize(width: 844, height: 390)
+        let image = renderer.render(renderContext(), size: viewportSize)
+        XCTAssertEqual(image.size.width, viewportSize.width)
+        XCTAssertEqual(image.size.height, viewportSize.height)
+        XCTAssertGreaterThan(nonBackgroundPixelCount(image), 100)
+    }
+
+    private func renderContext() -> RenderContext {
+        RenderContext(
             state: .paused,
             word: "reading",
             beforeText: "fast",
@@ -21,10 +37,7 @@ final class RendererTests: XCTestCase {
             progressPercent: 12,
             settings: ReaderSettings(),
             showFooter: true
-        ))
-        XCTAssertEqual(image.size.width, 640)
-        XCTAssertEqual(image.size.height, 172)
-        XCTAssertGreaterThan(nonBackgroundPixelCount(image), 100)
+        )
     }
 
     private func nonBackgroundPixelCount(_ image: UIImage) -> Int {
@@ -43,4 +56,3 @@ final class RendererTests: XCTestCase {
         return count
     }
 }
-

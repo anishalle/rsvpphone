@@ -2,44 +2,44 @@ import SwiftUI
 
 @MainActor
 final class ReaderViewModel: ObservableObject {
-    enum MenuScreen {
-        case main
-        case settingsHome
-        case settingsDisplay
-        case settingsPacing
-        case typography
-        case library
-        case chapters
-        case restart
+    struct ChapterRow: Identifiable, Equatable {
+        let id: Int
+        let title: String
+        let wordIndex: Int
+        let isCurrent: Bool
     }
 
     @Published var renderImage: UIImage
     @Published var importing = false
+    @Published var chromeVisible = false
+    @Published var settingsVisible = false
+    @Published var actionsVisible = false
+    @Published var records: [BookRecord] = []
+    @Published var settings = ReaderSettings() {
+        didSet { applySettings(redraw: true) }
+    }
 
     private let renderer = RsvpRenderer()
     private let reader = ReadingLoop()
     private let store = BookStore()
     private var bookContent = BookContent()
     private var currentRecord: BookRecord?
-    private var settings = ReaderSettings()
     private var state: ReaderState = .paused
-    private var menuScreen: MenuScreen = .main
-    private var selectedIndex = 0
-    private var records: [BookRecord] = []
     private var timer: Timer?
-    private var pressStartTimer: Timer?
+    private var holdStartTimer: Timer?
+    private var rewindTimer: Timer?
+    private var chromeHideTimer: Timer?
     private var gestureStartIndex = 0
     private var touchActive = false
     private var touchMovedFar = false
     private var pressPlaybackActive = false
+    private var rewindActive = false
     private var contextVisible = false
     private var wpmFeedbackUntil: Date?
     private var lastProgressSave = Date.distantPast
     private var renderSize: CGSize = .zero
 
-    private let menuItems = ["Resume", "Chapters", "Library", "Settings", "Restart"]
-    private let settingsHome = ["Back", "Display", "Typography tune", "Word pacing"]
-    private let typographySamples = ["minimum", "encyclopaedia", "state-of-the-art", "HTTP/2", "well-known", "rhythms", "illumination", "WAVEFORM", "I"]
+    let typographySamples = ["minimum", "encyclopaedia", "state-of-the-art", "HTTP/2", "well-known", "rhythms", "illumination", "WAVEFORM", "I"]
 
     init() {
         renderImage = UIImage()
@@ -51,8 +51,7 @@ final class ReaderViewModel: ObservableObject {
             reader.begin(nowMs: nowMs)
             bookContent = BookContent(title: "Demo", words: (0..<reader.wordCount).map { reader.wordAt($0) }, chapters: [ChapterMarker(title: "Demo", wordIndex: 0)], paragraphStarts: [0])
         }
-        reader.setWpm(settings.wpm)
-        reader.pacingConfig = settings.pacingConfig
+        applySettings(redraw: false)
         redraw()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -61,16 +60,45 @@ final class ReaderViewModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
-        pressStartTimer?.invalidate()
+        holdStartTimer?.invalidate()
+        rewindTimer?.invalidate()
+        chromeHideTimer?.invalidate()
+    }
+
+    var bookTitle: String {
+        if !bookContent.title.isEmpty { return bookContent.title }
+        return currentRecord?.title ?? "Demo"
+    }
+
+    var progressPercent: Int { readingProgressPercent() }
+    var currentChapterTitle: String { currentChapterLabel() }
+    var currentWordIndex: Int { reader.currentIndex }
+    var wpm: Int { reader.wpm }
+    var isPlaying: Bool { state == .playing }
+    var canShowChapters: Bool { !chapterRows.isEmpty }
+
+    var chromeSubtitle: String {
+        "\(currentChapterLabel()) - \(readingProgressPercent())% - \(reader.wpm) WPM"
+    }
+
+    var chapterRows: [ChapterRow] {
+        let markers = bookContent.chapters.isEmpty ? [ChapterMarker(title: "Start of book", wordIndex: 0)] : bookContent.chapters
+        return markers.enumerated().map { index, marker in
+            let next = markers[safe: index + 1]?.wordIndex ?? reader.wordCount
+            return ChapterRow(
+                id: index,
+                title: marker.title,
+                wordIndex: marker.wordIndex,
+                isCurrent: reader.currentIndex >= marker.wordIndex && reader.currentIndex < next
+            )
+        }
     }
 
     func setViewportSize(_ viewportSize: CGSize) {
-        let landscape = CGSize(width: max(viewportSize.width, viewportSize.height),
-                               height: min(viewportSize.width, viewportSize.height))
-        guard landscape.width >= 1, landscape.height >= 1 else { return }
-        guard abs(landscape.width - renderSize.width) > 0.5
-           || abs(landscape.height - renderSize.height) > 0.5 else { return }
-        renderSize = landscape
+        guard viewportSize.width >= 1, viewportSize.height >= 1 else { return }
+        guard abs(viewportSize.width - renderSize.width) > 0.5
+           || abs(viewportSize.height - renderSize.height) > 0.5 else { return }
+        renderSize = viewportSize
         redraw()
     }
 
@@ -82,75 +110,181 @@ final class ReaderViewModel: ObservableObject {
             records = store.allRecords()
             load(record: record)
             state = .paused
+            actionsVisible = false
+            settingsVisible = false
+            chromeVisible = true
         } catch {
             state = .paused
             renderStatus("Import failed", line1: url.lastPathComponent, line2: error.localizedDescription)
+            chromeVisible = true
         }
         importing = false
         redraw()
     }
 
-    func openMenu() {
-        guard state != .playing else { return }
-        state = .menu
-        menuScreen = .main
-        selectedIndex = 0
+    func toggleChrome() {
+        if settingsVisible || actionsVisible {
+            closePanels()
+            return
+        }
+        chromeVisible.toggle()
+        if chromeVisible { scheduleChromeAutoHideIfNeeded() }
+    }
+
+    func showChrome() {
+        chromeVisible = true
+        scheduleChromeAutoHideIfNeeded()
+    }
+
+    func hideChrome() {
+        settingsVisible = false
+        actionsVisible = false
+        chromeVisible = false
+        chromeHideTimer?.invalidate()
+    }
+
+    func openSettingsPanel() {
+        pauseIfNeeded()
+        settingsVisible = true
+        actionsVisible = false
+        chromeVisible = true
+    }
+
+    func openActionsPanel() {
+        pauseIfNeeded()
+        records = store.allRecords()
+        actionsVisible = true
+        settingsVisible = false
+        chromeVisible = true
+    }
+
+    func closePanels() {
+        settingsVisible = false
+        actionsVisible = false
+        chromeVisible = true
+    }
+
+    func beginImport() {
+        pauseIfNeeded()
+        importing = true
+    }
+
+    func selectBook(_ record: BookRecord) {
+        pauseIfNeeded()
+        load(record: record)
+        actionsVisible = false
+        chromeVisible = true
+        saveProgress(force: true)
         redraw()
     }
 
-    func touchChanged(_ translation: CGSize) {
+    func selectChapter(_ row: ChapterRow) {
+        pauseIfNeeded()
+        reader.seekTo(row.wordIndex)
+        contextVisible = false
+        actionsVisible = false
+        chromeVisible = true
+        saveProgress(force: true)
+        redraw()
+    }
+
+    func restartBook() {
+        pauseIfNeeded()
+        reader.seekTo(0)
+        contextVisible = false
+        actionsVisible = false
+        chromeVisible = true
+        saveProgress(force: true)
+        redraw()
+    }
+
+    func resetTypography() {
+        settings.typography = TypographyConfig()
+    }
+
+    func resetPacing() {
+        settings.pacingLongWordLevelIndex = 2
+        settings.pacingComplexWordLevelIndex = 2
+        settings.pacingPunctuationLevelIndex = 2
+        settings.pacingJargonLevelIndex = 2
+        settings.pacingPhraseLevelIndex = 2
+    }
+
+    func touchChanged(startLocation: CGPoint, location: CGPoint, translation: CGSize) {
+        if settingsVisible || actionsVisible { return }
         if !touchActive {
             touchActive = true
             touchMovedFar = false
             pressPlaybackActive = false
+            rewindActive = false
             gestureStartIndex = reader.currentIndex
-            schedulePressPlayback()
+            scheduleHoldAction(startLocation: startLocation)
         }
 
         if movementDistance(translation) > 12 {
             if !touchMovedFar {
                 touchMovedFar = true
-                cancelPressPlayback()
-                if pressPlaybackActive {
-                    stopPressPlayback()
-                }
+                cancelHoldAction()
+                stopRewindIfNeeded()
+                if pressPlaybackActive { stopPressPlayback() }
             }
             dragChanged(translation)
         }
     }
 
-    func touchEnded(_ translation: CGSize) {
+    func touchEnded(startLocation: CGPoint, location: CGPoint, translation: CGSize) {
+        if settingsVisible || actionsVisible {
+            closePanels()
+            return
+        }
+
         let shouldHandleDrag = touchMovedFar || movementDistance(translation) > 12
-        cancelPressPlayback()
-        if pressPlaybackActive {
+        cancelHoldAction()
+        if rewindActive {
+            stopRewindIfNeeded()
+        } else if pressPlaybackActive {
             stopPressPlayback()
         } else if shouldHandleDrag {
             dragEnded(translation)
         } else {
-            tap()
+            toggleChrome()
         }
         touchActive = false
         touchMovedFar = false
     }
 
-    private func schedulePressPlayback() {
-        cancelPressPlayback()
+    private func applySettings(redraw shouldRedraw: Bool) {
+        reader.setWpm(settings.wpm)
+        reader.pacingConfig = settings.pacingConfig
+        saveSettings()
+        if shouldRedraw { redraw() }
+    }
+
+    private func scheduleHoldAction(startLocation: CGPoint) {
+        cancelHoldAction()
         guard state == .paused else { return }
-        pressStartTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
+        let leftRewindEdge = max(120, renderSize.width * 0.25)
+        let isLeftHold = startLocation.x <= leftRewindEdge
+        holdStartTimer = Timer.scheduledTimer(withTimeInterval: isLeftHold ? 0.22 : 0.18, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.startPressPlaybackIfNeeded()
+                if isLeftHold {
+                    self?.startRewindIfNeeded()
+                } else {
+                    self?.startPressPlaybackIfNeeded()
+                }
             }
         }
     }
 
-    private func cancelPressPlayback() {
-        pressStartTimer?.invalidate()
-        pressStartTimer = nil
+    private func cancelHoldAction() {
+        holdStartTimer?.invalidate()
+        holdStartTimer = nil
     }
 
     private func startPressPlaybackIfNeeded() {
-        pressStartTimer = nil
+        holdStartTimer = nil
         guard touchActive, !touchMovedFar, state == .paused else { return }
+        hideChrome()
         state = .playing
         pressPlaybackActive = true
         contextVisible = false
@@ -169,6 +303,41 @@ final class ReaderViewModel: ObservableObject {
         redraw()
     }
 
+    private func startRewindIfNeeded() {
+        holdStartTimer = nil
+        guard touchActive, !touchMovedFar, state == .paused else { return }
+        rewindActive = true
+        contextVisible = true
+        showChrome()
+        rewindOneWord()
+        rewindTimer = Timer.scheduledTimer(withTimeInterval: rewindInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.rewindOneWord() }
+        }
+    }
+
+    private func rewindOneWord() {
+        guard rewindActive else { return }
+        if reader.stepBackward() {
+            redraw()
+        } else {
+            stopRewindIfNeeded()
+        }
+    }
+
+    private func stopRewindIfNeeded() {
+        rewindTimer?.invalidate()
+        rewindTimer = nil
+        if rewindActive {
+            rewindActive = false
+            saveProgress(force: true)
+            redraw()
+        }
+    }
+
+    private var rewindInterval: TimeInterval {
+        max(0.08, min(0.18, Double(reader.wordIntervalMs) / 1000.0))
+    }
+
     private func movementDistance(_ translation: CGSize) -> CGFloat {
         hypot(translation.width, translation.height)
     }
@@ -184,27 +353,17 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func dragEnded(_ translation: CGSize) {
-        if state == .menu {
-            handleMenuDragEnded(translation)
-            return
-        }
         guard state == .paused else { return }
         if abs(translation.height) > abs(translation.width) + 12, abs(translation.height) > 40 {
             reader.adjustWpm(translation.height < 0 ? 1 : -1)
             settings.wpm = reader.wpm
-            saveSettings()
             wpmFeedbackUntil = Date().addingTimeInterval(0.9)
             contextVisible = false
+            showChrome()
         } else if abs(translation.width) > 40 {
             saveProgress(force: true)
         }
         redraw()
-    }
-
-    private func tap() {
-        if state == .menu {
-            selectMenuItem()
-        }
     }
 
     private func tick() {
@@ -220,174 +379,43 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
-    private func handleMenuDragEnded(_ translation: CGSize) {
-        if abs(translation.height) > abs(translation.width) + 12, abs(translation.height) > 40 {
-            moveSelection(translation.height < 0 ? -1 : 1)
-        } else if abs(translation.width) > 40, menuScreen == .typography {
-            moveSelection(translation.width < 0 ? 1 : -1)
-        } else if abs(translation.width) < 18, abs(translation.height) < 18 {
-            selectMenuItem()
-        }
-    }
-
-    private func moveSelection(_ delta: Int) {
-        let count = currentMenuCount()
-        guard count > 0 else { return }
-        selectedIndex = (selectedIndex + delta + count) % count
-        redraw()
-    }
-
-    private func selectMenuItem() {
-        switch menuScreen {
-        case .main:
-            switch selectedIndex {
-            case 0: state = .paused
-            case 1: menuScreen = .chapters; selectedIndex = currentChapterSelection()
-            case 2: records = store.allRecords(); menuScreen = .library; selectedIndex = 0
-            case 3: menuScreen = .settingsHome; selectedIndex = 1
-            case 4: reader.seekTo(0); state = .paused; saveProgress(force: true)
-            default: break
-            }
-        case .settingsHome:
-            if selectedIndex == 0 { menuScreen = .main; selectedIndex = 0 }
-            else if selectedIndex == 1 { menuScreen = .settingsDisplay; selectedIndex = 1 }
-            else if selectedIndex == 2 { menuScreen = .typography; selectedIndex = 1 }
-            else if selectedIndex == 3 { menuScreen = .settingsPacing; selectedIndex = 1 }
-        case .settingsDisplay:
-            handleDisplaySettings()
-        case .settingsPacing:
-            handlePacingSettings()
-        case .typography:
-            handleTypography()
-        case .library:
-            if selectedIndex == 0 {
-                importing = true
-            } else if selectedIndex - 1 < records.count {
-                load(record: records[selectedIndex - 1])
-                state = .paused
-            }
-        case .chapters:
-            if selectedIndex == 0 { menuScreen = .main; selectedIndex = 0 }
-            else {
-                let idx = selectedIndex - 1
-                let chapter = bookContent.chapters[safe: idx] ?? ChapterMarker(title: "Start", wordIndex: 0)
-                reader.seekTo(chapter.wordIndex)
-                state = .paused
-                saveProgress(force: true)
-            }
-        case .restart:
+    private func pauseIfNeeded() {
+        cancelHoldAction()
+        stopRewindIfNeeded()
+        if state == .playing {
             state = .paused
-        }
-        saveSettings()
-        redraw()
-    }
-
-    private func handleDisplaySettings() {
-        if selectedIndex == 0 { menuScreen = .settingsHome; selectedIndex = 1; return }
-        if selectedIndex == 1 {
-            let modes = ThemeMode.allCases
-            settings.theme = modes[(settings.theme.rawValue + 1) % modes.count]
-        } else if selectedIndex == 2 {
-            settings.brightnessLevelIndex = (settings.brightnessLevelIndex + 1) % ReaderSettings.brightnessLevels.count
-        } else if selectedIndex == 3 {
-            settings.phantomWordsEnabled.toggle()
-        } else if selectedIndex == 4 {
-            settings.fontSizeLevel = (settings.fontSizeLevel + 1) % ReaderSettings.readerFontSizeLabels.count
-        } else if selectedIndex == 5 {
-            menuScreen = .typography
-            selectedIndex = 1
+            pressPlaybackActive = false
+            saveProgress(force: true)
+            redraw()
         }
     }
 
-    private func handlePacingSettings() {
-        if selectedIndex == 0 { menuScreen = .settingsHome; selectedIndex = 3; return }
-        if selectedIndex == 1 { settings.pacingLongWordLevelIndex = (settings.pacingLongWordLevelIndex + 1) % ReaderSettings.pacingScaleLabels.count }
-        else if selectedIndex == 2 { settings.pacingComplexWordLevelIndex = (settings.pacingComplexWordLevelIndex + 1) % ReaderSettings.pacingScaleLabels.count }
-        else if selectedIndex == 3 { settings.pacingPunctuationLevelIndex = (settings.pacingPunctuationLevelIndex + 1) % ReaderSettings.pacingScaleLabels.count }
-        else if selectedIndex == 4 {
-            settings.pacingLongWordLevelIndex = 2
-            settings.pacingComplexWordLevelIndex = 2
-            settings.pacingPunctuationLevelIndex = 2
-        }
-        reader.pacingConfig = settings.pacingConfig
-    }
-
-    private func handleTypography() {
-        if selectedIndex == 0 { menuScreen = .settingsHome; selectedIndex = 2; return }
-        if selectedIndex == 1 { settings.typography.trackingPx = next(settings.typography.trackingPx, min: -2, max: 3) }
-        else if selectedIndex == 2 { settings.typography.anchorPercent = next(settings.typography.anchorPercent, min: 30, max: 40) }
-        else if selectedIndex == 3 { settings.typography.guideHalfWidth = next(settings.typography.guideHalfWidth, min: 12, max: 30, step: 2) }
-        else if selectedIndex == 4 { settings.typography.guideGap = next(settings.typography.guideGap, min: 2, max: 8) }
-        else if selectedIndex == 5 { settings.typography = TypographyConfig() }
-    }
-
-    private func currentMenuCount() -> Int {
-        switch menuScreen {
-        case .main: return menuItems.count
-        case .settingsHome: return settingsHome.count
-        case .settingsDisplay: return displaySettingsItems().count
-        case .settingsPacing: return pacingSettingsItems().count
-        case .typography: return typographyItems().count
-        case .library: return records.count + 1
-        case .chapters: return max(2, bookContent.chapters.count + 1)
-        case .restart: return 2
+    private func scheduleChromeAutoHideIfNeeded() {
+        chromeHideTimer?.invalidate()
+        guard state == .playing, !settingsVisible, !actionsVisible else { return }
+        chromeHideTimer = Timer.scheduledTimer(withTimeInterval: 2.4, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state == .playing, !self.settingsVisible, !self.actionsVisible else { return }
+                self.chromeVisible = false
+            }
         }
     }
 
     private func redraw() {
         guard renderSize.width >= 1, renderSize.height >= 1 else { return }
-        let ctx: RenderContext
-        if state == .menu {
-            ctx = menuRenderContext()
-        } else {
-            ctx = RenderContext(
-                state: state,
-                word: reader.currentWord,
-                beforeText: settings.phantomWordsEnabled ? phantomBeforeText() : "",
-                afterText: settings.phantomWordsEnabled ? phantomAfterText() : "",
-                chapterLabel: currentChapterLabel(),
-                progressPercent: readingProgressPercent(),
-                settings: settings,
-                showFooter: state != .playing,
-                wpmFeedback: wpmFeedbackUntil == nil ? nil : reader.wpm,
-                contextWords: contextVisible ? contextWords() : []
-            )
-        }
+        let ctx = RenderContext(
+            state: state,
+            word: reader.currentWord,
+            beforeText: settings.phantomWordsEnabled ? phantomBeforeText() : "",
+            afterText: settings.phantomWordsEnabled ? phantomAfterText() : "",
+            chapterLabel: currentChapterLabel(),
+            progressPercent: readingProgressPercent(),
+            settings: settings,
+            showFooter: state != .playing,
+            wpmFeedback: wpmFeedbackUntil == nil ? nil : reader.wpm,
+            contextWords: contextVisible ? contextWords() : []
+        )
         renderImage = renderer.render(ctx, size: renderSize)
-    }
-
-    private func menuRenderContext() -> RenderContext {
-        var context = RenderContext(state: state, word: reader.currentWord, beforeText: "", afterText: "", chapterLabel: currentChapterLabel(), progressPercent: readingProgressPercent(), settings: settings, showFooter: true)
-        context.selectedIndex = selectedIndex
-        switch menuScreen {
-        case .main: context.menuItems = menuItems
-        case .settingsHome: context.menuItems = settingsHome
-        case .settingsDisplay: context.menuItems = displaySettingsItems()
-        case .settingsPacing: context.menuItems = pacingSettingsItems()
-        case .typography: context.menuItems = typographyItems()
-        case .library:
-            context.libraryItems = [RsvpRenderer.LibraryItem(title: "Import", subtitle: "Files app")] + records.map {
-                let percent = $0.wordCount > 1 ? "\(($0.currentWordIndex * 100) / max(1, $0.wordCount - 1))%" : ""
-                return RsvpRenderer.LibraryItem(title: $0.title, subtitle: [$0.author, percent].filter { !$0.isEmpty }.joined(separator: " - "))
-            }
-        case .chapters:
-            context.menuItems = ["Back"] + (bookContent.chapters.isEmpty ? ["Start of book"] : bookContent.chapters.enumerated().map { "\($0.offset + 1) \($0.element.title)" })
-        case .restart:
-            context.menuItems = ["No, keep place", "Yes, restart"]
-        }
-        return context
-    }
-
-    private func displaySettingsItems() -> [String] {
-        ["Back", "Theme: \(settings.theme.label)", "Brightness: \(settings.brightnessPercent)%", "Phantom words: \(settings.phantomWordsEnabled ? "On" : "Off")", "Font size: \(ReaderSettings.readerFontSizeLabels[safe: settings.fontSizeLevel] ?? "Large")", "Typography tune"]
-    }
-
-    private func pacingSettingsItems() -> [String] {
-        ["Back", "Long words: \(ReaderSettings.pacingScaleLabels[settings.pacingLongWordLevelIndex])", "Complexity: \(ReaderSettings.pacingScaleLabels[settings.pacingComplexWordLevelIndex])", "Punctuation: \(ReaderSettings.pacingScaleLabels[settings.pacingPunctuationLevelIndex])", "Reset pacing"]
-    }
-
-    private func typographyItems() -> [String] {
-        ["Back", "Tracking: \(settings.typography.trackingPx >= 0 ? "+" : "")\(settings.typography.trackingPx) px", "Anchor: \(settings.typography.anchorPercent)%", "Guide width: \(settings.typography.guideHalfWidth) px", "Guide gap: \(settings.typography.guideGap) px", "Reset"]
     }
 
     private func load(record: BookRecord) {
@@ -423,15 +451,6 @@ final class ReaderViewModel: ObservableObject {
             current = marker
         }
         return current.title
-    }
-
-    private func currentChapterSelection() -> Int {
-        guard !bookContent.chapters.isEmpty else { return 1 }
-        var selected = 0
-        for (idx, marker) in bookContent.chapters.enumerated() where marker.wordIndex <= reader.currentIndex {
-            selected = idx
-        }
-        return selected + 1
     }
 
     private func readingProgressPercent() -> Int {
@@ -478,12 +497,6 @@ final class ReaderViewModel: ObservableObject {
         return deltaX > 0 ? steps : -steps
     }
 
-    private func next(_ value: Int, min: Int, max: Int, step: Int = 1) -> Int {
-        let normalized = Swift.max(min, Swift.min(max, value))
-        let candidate = normalized + step
-        return candidate > max ? min : candidate
-    }
-
     private var nowMs: Int {
         Int(Date().timeIntervalSinceReferenceDate * 1000)
     }
@@ -495,8 +508,9 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func saveSettings() {
-        settings.wpm = reader.wpm
-        if let data = try? JSONEncoder().encode(settings) {
+        var snapshot = settings
+        snapshot.wpm = reader.wpm
+        if let data = try? JSONEncoder().encode(snapshot) {
             UserDefaults.standard.set(data, forKey: "ReaderSettings")
         }
     }

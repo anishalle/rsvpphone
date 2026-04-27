@@ -71,11 +71,74 @@ final class ReadingLoopTests: XCTestCase {
         XCTAssertEqual(length.currentWordDurationMs(), 206)
     }
 
+    func testJargonScaleIsIndependentFromComplexity() {
+        let loop = reader(300, ["HTTP/2", "request"])
+        loop.pacingConfig = PacingConfig(
+            longWordScalePercent: 100,
+            complexWordScalePercent: 0,
+            punctuationScalePercent: 100,
+            jargonScalePercent: 0,
+            phraseScalePercent: 100
+        )
+        let withoutJargon = loop.currentWordDurationMs()
+
+        loop.pacingConfig = PacingConfig(
+            longWordScalePercent: 100,
+            complexWordScalePercent: 0,
+            punctuationScalePercent: 100,
+            jargonScalePercent: 150,
+            phraseScalePercent: 100
+        )
+        XCTAssertGreaterThan(loop.currentWordDurationMs(), withoutJargon)
+    }
+
+    func testPhraseScaleIsIndependentFromSentencePunctuation() {
+        let phrase = reader(300, ["however,", "the"])
+        phrase.pacingConfig = PacingConfig(
+            longWordScalePercent: 100,
+            complexWordScalePercent: 100,
+            punctuationScalePercent: 0,
+            jargonScalePercent: 100,
+            phraseScalePercent: 0
+        )
+        let withoutPhrasePause = phrase.currentWordDurationMs()
+
+        phrase.pacingConfig = PacingConfig(
+            longWordScalePercent: 100,
+            complexWordScalePercent: 100,
+            punctuationScalePercent: 0,
+            jargonScalePercent: 100,
+            phraseScalePercent: 150
+        )
+        XCTAssertGreaterThan(phrase.currentWordDurationMs(), withoutPhrasePause)
+
+        let sentence = reader(300, ["done.", "The"])
+        sentence.pacingConfig = PacingConfig(
+            longWordScalePercent: 100,
+            complexWordScalePercent: 100,
+            punctuationScalePercent: 100,
+            jargonScalePercent: 100,
+            phraseScalePercent: 0
+        )
+        XCTAssertEqual(sentence.currentWordDurationMs(), 470)
+    }
+
     func testSeekAndScrubClampLoadedBook() {
         let loop = reader(300, ["one", "two", "three"])
         loop.seekRelative(baseIndex: 0, steps: -10)
         XCTAssertEqual(loop.currentIndex, 0)
         loop.seekRelative(baseIndex: 0, steps: 10)
         XCTAssertEqual(loop.currentIndex, 2)
+    }
+
+    func testStepBackwardClampsLoadedBook() {
+        let loop = reader(300, ["one", "two", "three"])
+        loop.seekTo(2)
+        XCTAssertTrue(loop.stepBackward())
+        XCTAssertEqual(loop.currentIndex, 1)
+        XCTAssertTrue(loop.stepBackward())
+        XCTAssertEqual(loop.currentIndex, 0)
+        XCTAssertFalse(loop.stepBackward())
+        XCTAssertEqual(loop.currentIndex, 0)
     }
 }

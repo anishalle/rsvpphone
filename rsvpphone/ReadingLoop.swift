@@ -67,6 +67,13 @@ final class ReadingLoop {
         seekRelative(baseIndex: currentIndex, steps: steps)
     }
 
+    @discardableResult
+    func stepBackward() -> Bool {
+        let previous = currentIndex
+        seekTo(currentIndex - 1)
+        return currentIndex != previous
+    }
+
     func seekTo(_ wordIndex: Int) {
         guard wordCount > 0 else {
             currentWord = ""
@@ -261,6 +268,11 @@ extension ReadingLoop {
         var bonus = 0
         let syllables = approximateSyllableGroupCount(word)
         if syllables > 2 { bonus += min(50, (syllables - 2) * 10) }
+        return min(85, bonus)
+    }
+
+    private static func jargonBonusPercentForWord(_ word: String) -> Int {
+        var bonus = 0
         let letters = letterCharacterCount(word)
         let digits = digitCharacterCount(word)
         let uppercase = uppercaseLetterCount(word)
@@ -275,13 +287,21 @@ extension ReadingLoop {
     private static func punctuationPausePercentForWord(_ word: String, nextWordStartsLowercase: Bool) -> Int {
         if trailingRepeatedCharCount(word, target: ".") >= 3 { return 110 }
         switch trailingRhythmChar(word) {
-        case ",": return 45
-        case "-": return 60
-        case ";", ":": return 80
         case ".":
             return looksLikeAbbreviation(word, nextWordStartsLowercase: nextWordStartsLowercase) ? 0 : 135
         case "!", "?": return 150
         default: return 0
+        }
+    }
+
+    private static func phrasePausePercentForWord(_ word: String) -> Int {
+        switch trailingRhythmChar(word) {
+        case ",": return 45
+        case "-": return 60
+        case ";", ":": return 80
+        default:
+            if word.contains("(") || word.contains(")") { return 30 }
+            return 0
         }
     }
 
@@ -290,9 +310,10 @@ extension ReadingLoop {
         var total = 0
         total += scaledPercent(lengthBonusPercentForWord(word), config.longWordScalePercent)
         total += scaledPercent(complexityBonusPercentForWord(word), config.complexWordScalePercent)
+        total += scaledPercent(jargonBonusPercentForWord(word), config.jargonScalePercent)
         total += scaledPercent(punctuationPausePercentForWord(word, nextWordStartsLowercase: nextWordStartsLowercase), config.punctuationScalePercent)
+        total += scaledPercent(phrasePausePercentForWord(word), config.phraseScalePercent)
         total = min(280, total)
         return baseIntervalMs + percentOf(baseIntervalMs, total)
     }
 }
-

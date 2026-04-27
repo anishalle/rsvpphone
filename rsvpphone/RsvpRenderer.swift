@@ -16,6 +16,8 @@ final class RsvpRenderer {
 
     private let baseFontName = "AvenirNext-Regular"
     private let tinyFontName = "Menlo-Regular"
+    private let footerHorizontalInset: CGFloat = 24
+    private let footerBottomInset: CGFloat = 26
     private var activeSize = RsvpRenderer.logicalSize
 
     func render(_ context: RenderContext, size: CGSize = RsvpRenderer.logicalSize) -> UIImage {
@@ -46,7 +48,7 @@ final class RsvpRenderer {
     private func drawReader(_ cg: CGContext, context: RenderContext) {
         let settings = context.settings
         let current = context.word
-        let fontSize = [62.0, 44.0, 31.0][safe: settings.fontSizeLevel] ?? 62.0
+        let fontSize = [58.0, 42.0, 30.0][safe: settings.fontSizeLevel] ?? 58.0
         let font = UIFont(name: baseFontName, size: fontSize) ?? .systemFont(ofSize: fontSize, weight: .regular)
         let y = (activeSize.height - font.lineHeight) / 2 - font.descender / 2
         let anchorX = activeSize.width * CGFloat(settings.typography.anchorPercent) / 100.0
@@ -57,22 +59,15 @@ final class RsvpRenderer {
         if !context.beforeText.isEmpty {
             let beforeFont = font
             let gap = CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30)
-            let maxWidth = max(0, startX - gap - 12)
-            let fitted = fitSuffixWords(context.beforeText, maxWidth: maxWidth, font: beforeFont, tracking: settings.typography.trackingPx)
-            let beforeWidth = measuredWidth(fitted, font: beforeFont, tracking: settings.typography.trackingPx)
-            if !fitted.isEmpty {
-                drawText(fitted, at: CGPoint(x: startX - beforeWidth - gap, y: y), font: beforeFont, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
-            }
+            let beforeWidth = measuredWidth(context.beforeText, font: beforeFont, tracking: settings.typography.trackingPx)
+            drawText(context.beforeText, at: CGPoint(x: startX - beforeWidth - gap, y: y), font: beforeFont, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
         }
         drawRsvpWord(current, x: startX, y: y, focusIndex: focus, font: font, settings: settings)
         if !context.afterText.isEmpty {
             let currentWidth = measuredWidth(current, font: font, tracking: settings.typography.trackingPx)
             let gap = CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30)
             let x = startX + currentWidth + gap
-            let fitted = fitPrefixWords(context.afterText, maxWidth: activeSize.width - x - 12, font: font, tracking: settings.typography.trackingPx)
-            if !fitted.isEmpty {
-                drawText(fitted, at: CGPoint(x: x, y: y), font: font, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
-            }
+            drawText(context.afterText, at: CGPoint(x: x, y: y), font: font, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
         }
         if let wpm = context.wpmFeedback {
             drawTiny("\(wpm) WPM", centeredY: activeSize.height - 48, color: focusColor(settings), settings: settings)
@@ -190,11 +185,11 @@ final class RsvpRenderer {
     }
 
     private func drawFooter(_ chapter: String, progress: Int, settings: ReaderSettings) {
-        let y = activeSize.height - 22
-        drawTiny(chapter.isEmpty ? "START" : chapter, at: CGPoint(x: 12, y: y), color: footerColor(settings), settings: settings)
+        let y = activeSize.height - footerBottomInset
+        drawTiny(chapter.isEmpty ? "START" : chapter, at: CGPoint(x: footerHorizontalInset, y: y), color: footerColor(settings), settings: settings)
         let pct = "\(progress)%"
         let width = tinyWidth(pct)
-        drawTiny(pct, at: CGPoint(x: activeSize.width - 12 - width, y: y), color: footerColor(settings), settings: settings)
+        drawTiny(pct, at: CGPoint(x: activeSize.width - footerHorizontalInset - width, y: y), color: footerColor(settings), settings: settings)
     }
 
     private func drawAnchorGuide(_ cg: CGContext, anchorX: CGFloat, textY: CGFloat, textHeight: CGFloat, settings: ReaderSettings) {
