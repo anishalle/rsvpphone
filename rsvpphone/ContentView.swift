@@ -198,7 +198,7 @@ struct ContentView: View {
                         typographyPreview
 
                         Stepper("Tracking: \(signed(model.settings.typography.trackingPx)) px", value: $model.settings.typography.trackingPx, in: -2...3)
-                        Stepper("Anchor: \(model.settings.typography.anchorPercent)%", value: $model.settings.typography.anchorPercent, in: 30...40)
+                        Stepper("Anchor: \(model.settings.typography.anchorPercent)%", value: $model.settings.typography.anchorPercent, in: 0...100)
                         Stepper("Guide width: \(model.settings.typography.guideHalfWidth) px", value: $model.settings.typography.guideHalfWidth, in: 12...30, step: 2)
                         Stepper("Guide gap: \(model.settings.typography.guideGap) px", value: $model.settings.typography.guideGap, in: 2...8)
 
