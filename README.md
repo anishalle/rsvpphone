@@ -1,7 +1,11 @@
 # RSVPPhone
+reading using the RSVP method, now on your iPhone!
 
-RSVPPhone is a native iPhone translation of RSVP Nano. It keeps the same 640 x 172 landscape reading surface, ORP anchor alignment, smart pacing, phantom words, context preview, chapter navigation, and compact menu structure.
+<img width="1278" height="590" alt="Screenshot 2026-04-27 at 12 41 22 PM" src="https://github.com/user-attachments/assets/f59cde4f-85a2-4637-bf33-a4961fb08ab6" />
 
+yes, im reading the Alchemist, and I'm maybe on the third sentence. cool book.
+
+coming to an app store near you! (soon, once i fund the $100 for an apple developer's license)
 ## Build
 
 ```sh
