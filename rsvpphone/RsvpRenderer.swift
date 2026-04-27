@@ -16,9 +16,11 @@ final class RsvpRenderer {
 
     private let baseFontName = "AvenirNext-Regular"
     private let tinyFontName = "Menlo-Regular"
+    private var activeSize = RsvpRenderer.logicalSize
 
-    func render(_ context: RenderContext) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: Self.logicalSize)
+    func render(_ context: RenderContext, size: CGSize = RsvpRenderer.logicalSize) -> UIImage {
+        activeSize = size
+        let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { imageContext in
             let cg = imageContext.cgContext
             fillBackground(cg, settings: context.settings)
@@ -38,7 +40,7 @@ final class RsvpRenderer {
 
     private func fillBackground(_ cg: CGContext, settings: ReaderSettings) {
         backgroundColor(settings).setFill()
-        cg.fill(CGRect(origin: .zero, size: Self.logicalSize))
+        cg.fill(CGRect(origin: .zero, size: activeSize))
     }
 
     private func drawReader(_ cg: CGContext, context: RenderContext) {
@@ -46,24 +48,34 @@ final class RsvpRenderer {
         let current = context.word
         let fontSize = [62.0, 44.0, 31.0][safe: settings.fontSizeLevel] ?? 62.0
         let font = UIFont(name: baseFontName, size: fontSize) ?? .systemFont(ofSize: fontSize, weight: .regular)
-        let y = (Self.logicalSize.height - font.lineHeight) / 2 - font.descender / 2
-        let anchorX = Self.logicalSize.width * CGFloat(settings.typography.anchorPercent) / 100.0
+        let y = (activeSize.height - font.lineHeight) / 2 - font.descender / 2
+        let anchorX = activeSize.width * CGFloat(settings.typography.anchorPercent) / 100.0
         let focus = focusLetterIndex(current)
         let startX = rsvpStartX(word: current, focusIndex: focus, anchorX: anchorX, font: font, tracking: settings.typography.trackingPx)
         drawAnchorGuide(cg, anchorX: anchorX, textY: y, textHeight: font.lineHeight, settings: settings)
 
         if !context.beforeText.isEmpty {
             let beforeFont = font
-            let beforeWidth = measuredWidth(context.beforeText, font: beforeFont, tracking: settings.typography.trackingPx)
-            drawText(context.beforeText, at: CGPoint(x: startX - beforeWidth - CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30), y: y), font: beforeFont, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
+            let gap = CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30)
+            let maxWidth = max(0, startX - gap - 12)
+            let fitted = fitSuffixWords(context.beforeText, maxWidth: maxWidth, font: beforeFont, tracking: settings.typography.trackingPx)
+            let beforeWidth = measuredWidth(fitted, font: beforeFont, tracking: settings.typography.trackingPx)
+            if !fitted.isEmpty {
+                drawText(fitted, at: CGPoint(x: startX - beforeWidth - gap, y: y), font: beforeFont, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
+            }
         }
         drawRsvpWord(current, x: startX, y: y, focusIndex: focus, font: font, settings: settings)
         if !context.afterText.isEmpty {
             let currentWidth = measuredWidth(current, font: font, tracking: settings.typography.trackingPx)
-            drawText(context.afterText, at: CGPoint(x: startX + currentWidth + CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30), y: y), font: font, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
+            let gap = CGFloat([30, 24, 20][safe: settings.fontSizeLevel] ?? 30)
+            let x = startX + currentWidth + gap
+            let fitted = fitPrefixWords(context.afterText, maxWidth: activeSize.width - x - 12, font: font, tracking: settings.typography.trackingPx)
+            if !fitted.isEmpty {
+                drawText(fitted, at: CGPoint(x: x, y: y), font: font, color: wordColor(settings).withAlphaComponent(0.24), tracking: settings.typography.trackingPx)
+            }
         }
         if let wpm = context.wpmFeedback {
-            drawTiny("\(wpm) WPM", centeredY: 124, color: focusColor(settings), settings: settings)
+            drawTiny("\(wpm) WPM", centeredY: activeSize.height - 48, color: focusColor(settings), settings: settings)
         }
         if context.showFooter {
             drawFooter(context.chapterLabel, progress: context.progressPercent, settings: settings)
@@ -77,7 +89,7 @@ final class RsvpRenderer {
         var lines: [[ContextWord]] = []
         var line: [ContextWord] = []
         var lineWidth: CGFloat = 0
-        let maxWidth = Self.logicalSize.width - marginX * 2
+        let maxWidth = activeSize.width - marginX * 2
         for word in context.contextWords {
             if word.paragraphStart, !line.isEmpty {
                 lines.append(line)
@@ -110,11 +122,11 @@ final class RsvpRenderer {
 
     private func drawMenu(_ cg: CGContext, context: RenderContext) {
         let rowHeight: CGFloat = 22
-        let visible = min(context.menuItems.count, max(1, Int(Self.logicalSize.height / rowHeight)))
+        let visible = min(context.menuItems.count, max(1, Int(activeSize.height / rowHeight)))
         var first = 0
         if context.selectedIndex >= visible / 2 { first = context.selectedIndex - visible / 2 }
         if first + visible > context.menuItems.count { first = max(0, context.menuItems.count - visible) }
-        var y = max(0, (Self.logicalSize.height - CGFloat(visible) * rowHeight) / 2)
+        var y = max(0, (activeSize.height - CGFloat(visible) * rowHeight) / 2)
         for row in 0..<visible {
             let index = first + row
             let selected = index == context.selectedIndex
@@ -133,7 +145,7 @@ final class RsvpRenderer {
         var first = 0
         if context.selectedIndex >= visible / 2 { first = context.selectedIndex - visible / 2 }
         if first + visible > context.libraryItems.count { first = max(0, context.libraryItems.count - visible) }
-        var y = max(28, (Self.logicalSize.height - CGFloat(visible) * rowHeight) / 2)
+        var y = max(28, (activeSize.height - CGFloat(visible) * rowHeight) / 2)
         for row in 0..<visible {
             let index = first + row
             let item = context.libraryItems[index]
@@ -152,11 +164,12 @@ final class RsvpRenderer {
 
     private func drawStatus(_ cg: CGContext, title: String, line1: String, line2: String, progress: Int?, settings: ReaderSettings) {
         let font = UIFont(name: baseFontName, size: 48) ?? .systemFont(ofSize: 48)
-        drawCentered(title, y: 44, font: font, color: wordColor(settings), settings: settings)
-        drawTiny(line1, centeredY: 108, color: dimColor(settings), settings: settings)
-        drawTiny(line2, centeredY: 132, color: focusColor(settings), settings: settings)
+        drawCentered(title, y: activeSize.height * 0.28, font: font, color: wordColor(settings), settings: settings)
+        drawTiny(line1, centeredY: activeSize.height * 0.63, color: dimColor(settings), settings: settings)
+        drawTiny(line2, centeredY: activeSize.height * 0.76, color: focusColor(settings), settings: settings)
         if let progress {
-            let bar = CGRect(x: 170, y: 154, width: 300, height: 8)
+            let barWidth = min(300, activeSize.width - 120)
+            let bar = CGRect(x: (activeSize.width - barWidth) / 2, y: activeSize.height - 22, width: barWidth, height: 8)
             dimColor(settings).setFill()
             cg.fill(bar)
             backgroundColor(settings).setFill()
@@ -177,15 +190,16 @@ final class RsvpRenderer {
     }
 
     private func drawFooter(_ chapter: String, progress: Int, settings: ReaderSettings) {
-        drawTiny(chapter.isEmpty ? "START" : chapter, at: CGPoint(x: 12, y: 150), color: footerColor(settings), settings: settings)
+        let y = activeSize.height - 22
+        drawTiny(chapter.isEmpty ? "START" : chapter, at: CGPoint(x: 12, y: y), color: footerColor(settings), settings: settings)
         let pct = "\(progress)%"
         let width = tinyWidth(pct)
-        drawTiny(pct, at: CGPoint(x: Self.logicalSize.width - 12 - width, y: 150), color: footerColor(settings), settings: settings)
+        drawTiny(pct, at: CGPoint(x: activeSize.width - 12 - width, y: y), color: footerColor(settings), settings: settings)
     }
 
     private func drawAnchorGuide(_ cg: CGContext, anchorX: CGFloat, textY: CGFloat, textHeight: CGFloat, settings: ReaderSettings) {
         let top = max(2, textY - 7)
-        let bottom = min(Self.logicalSize.height - 3, textY + textHeight + 7)
+        let bottom = min(activeSize.height - 3, textY + textHeight + 7)
         let half = CGFloat(settings.typography.guideHalfWidth)
         let gap = CGFloat(settings.typography.guideGap)
         wordColor(settings).withAlphaComponent(settings.theme == .night ? 0.53 : 0.38).setFill()
@@ -200,7 +214,7 @@ final class RsvpRenderer {
 
     private func drawCentered(_ text: String, y: CGFloat, font: UIFont, color: UIColor, settings: ReaderSettings) {
         let width = measuredWidth(text, font: font, tracking: settings.typography.trackingPx)
-        drawText(text, at: CGPoint(x: (Self.logicalSize.width - width) / 2, y: y), font: font, color: color, tracking: settings.typography.trackingPx)
+        drawText(text, at: CGPoint(x: (activeSize.width - width) / 2, y: y), font: font, color: color, tracking: settings.typography.trackingPx)
     }
 
     private func drawText(_ text: String, at point: CGPoint, font: UIFont, color: UIColor, tracking: Int) {
@@ -213,12 +227,12 @@ final class RsvpRenderer {
     }
 
     private func drawTiny(_ text: String, centeredY y: CGFloat, color: UIColor, settings: ReaderSettings) {
-        drawTiny(text, at: CGPoint(x: (Self.logicalSize.width - tinyWidth(text)) / 2, y: y), color: color, settings: settings)
+        drawTiny(text, at: CGPoint(x: (activeSize.width - tinyWidth(text)) / 2, y: y), color: color, settings: settings)
     }
 
     private func drawTiny(_ text: String, at point: CGPoint, color: UIColor, settings: ReaderSettings) {
         let font = UIFont(name: tinyFontName, size: 12) ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
-        let fitted = fit(text, maxWidth: Self.logicalSize.width - point.x - 12, font: font)
+        let fitted = fit(text, maxWidth: activeSize.width - point.x - 12, font: font)
         fitted.draw(at: point, withAttributes: [.font: font, .foregroundColor: color])
     }
 
@@ -236,6 +250,30 @@ final class RsvpRenderer {
         return fitted.isEmpty ? "..." : fitted + "..."
     }
 
+    private func fitPrefixWords(_ text: String, maxWidth: CGFloat, font: UIFont, tracking: Int) -> String {
+        guard maxWidth > 0 else { return "" }
+        let words = text.split(separator: " ").map(String.init)
+        var fitted: [String] = []
+        for word in words {
+            let candidate = (fitted + [word]).joined(separator: " ")
+            if measuredWidth(candidate, font: font, tracking: tracking) > maxWidth { break }
+            fitted.append(word)
+        }
+        return fitted.joined(separator: " ")
+    }
+
+    private func fitSuffixWords(_ text: String, maxWidth: CGFloat, font: UIFont, tracking: Int) -> String {
+        guard maxWidth > 0 else { return "" }
+        let words = text.split(separator: " ").map(String.init)
+        var fitted: [String] = []
+        for word in words.reversed() {
+            let candidate = ([word] + fitted).joined(separator: " ")
+            if measuredWidth(candidate, font: font, tracking: tracking) > maxWidth { break }
+            fitted.insert(word, at: 0)
+        }
+        return fitted.joined(separator: " ")
+    }
+
     private func measuredWidth(_ text: String, font: UIFont, tracking: Int) -> CGFloat {
         guard !text.isEmpty else { return 0 }
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .kern: tracking]
@@ -244,7 +282,7 @@ final class RsvpRenderer {
 
     private func rsvpStartX(word: String, focusIndex: Int, anchorX: CGFloat, font: UIFont, tracking: Int) -> CGFloat {
         guard focusIndex >= 0 else {
-            return (Self.logicalSize.width - measuredWidth(word, font: font, tracking: tracking)) / 2
+            return (activeSize.width - measuredWidth(word, font: font, tracking: tracking)) / 2
         }
         var before = ""
         let chars = Array(word)
@@ -309,4 +347,3 @@ final class RsvpRenderer {
         focusColor(settings).withAlphaComponent(0.7)
     }
 }
-

@@ -27,17 +27,22 @@ final class ReaderViewModel: ObservableObject {
     private var selectedIndex = 0
     private var records: [BookRecord] = []
     private var timer: Timer?
+    private var pressStartTimer: Timer?
     private var gestureStartIndex = 0
+    private var touchActive = false
+    private var touchMovedFar = false
+    private var pressPlaybackActive = false
     private var contextVisible = false
     private var wpmFeedbackUntil: Date?
     private var lastProgressSave = Date.distantPast
+    private var renderSize: CGSize = .zero
 
     private let menuItems = ["Resume", "Chapters", "Library", "Settings", "Restart"]
     private let settingsHome = ["Back", "Display", "Typography tune", "Word pacing"]
     private let typographySamples = ["minimum", "encyclopaedia", "state-of-the-art", "HTTP/2", "well-known", "rhythms", "illumination", "WAVEFORM", "I"]
 
     init() {
-        renderImage = renderer.render(RenderContext(state: .booting, word: "RSVP", beforeText: "", afterText: "", chapterLabel: "", progressPercent: 0, settings: ReaderSettings(), showFooter: false, statusTitle: "RSVP", statusLine1: "Loading", statusLine2: ""))
+        renderImage = UIImage()
         loadSettings()
         records = store.allRecords()
         if let first = records.first {
@@ -56,6 +61,17 @@ final class ReaderViewModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        pressStartTimer?.invalidate()
+    }
+
+    func setViewportSize(_ viewportSize: CGSize) {
+        let landscape = CGSize(width: max(viewportSize.width, viewportSize.height),
+                               height: min(viewportSize.width, viewportSize.height))
+        guard landscape.width >= 1, landscape.height >= 1 else { return }
+        guard abs(landscape.width - renderSize.width) > 0.5
+           || abs(landscape.height - renderSize.height) > 0.5 else { return }
+        renderSize = landscape
+        redraw()
     }
 
     func importURLs(_ urls: [URL]) {
@@ -82,23 +98,82 @@ final class ReaderViewModel: ObservableObject {
         redraw()
     }
 
-    func longPressChanged(_ pressing: Bool) {
-        if pressing, state == .paused {
-            state = .playing
-            contextVisible = false
-            reader.start(nowMs: nowMs)
-        } else if !pressing, state == .playing {
-            state = .paused
-            saveProgress(force: true)
+    func touchChanged(_ translation: CGSize) {
+        if !touchActive {
+            touchActive = true
+            touchMovedFar = false
+            pressPlaybackActive = false
+            gestureStartIndex = reader.currentIndex
+            schedulePressPlayback()
         }
+
+        if movementDistance(translation) > 12 {
+            if !touchMovedFar {
+                touchMovedFar = true
+                cancelPressPlayback()
+                if pressPlaybackActive {
+                    stopPressPlayback()
+                }
+            }
+            dragChanged(translation)
+        }
+    }
+
+    func touchEnded(_ translation: CGSize) {
+        let shouldHandleDrag = touchMovedFar || movementDistance(translation) > 12
+        cancelPressPlayback()
+        if pressPlaybackActive {
+            stopPressPlayback()
+        } else if shouldHandleDrag {
+            dragEnded(translation)
+        } else {
+            tap()
+        }
+        touchActive = false
+        touchMovedFar = false
+    }
+
+    private func schedulePressPlayback() {
+        cancelPressPlayback()
+        guard state == .paused else { return }
+        pressStartTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.startPressPlaybackIfNeeded()
+            }
+        }
+    }
+
+    private func cancelPressPlayback() {
+        pressStartTimer?.invalidate()
+        pressStartTimer = nil
+    }
+
+    private func startPressPlaybackIfNeeded() {
+        pressStartTimer = nil
+        guard touchActive, !touchMovedFar, state == .paused else { return }
+        state = .playing
+        pressPlaybackActive = true
+        contextVisible = false
+        reader.start(nowMs: nowMs)
         redraw()
     }
 
-    func gestureStarted() {
-        gestureStartIndex = reader.currentIndex
+    private func stopPressPlayback() {
+        guard state == .playing else {
+            pressPlaybackActive = false
+            return
+        }
+        state = .paused
+        pressPlaybackActive = false
+        saveProgress(force: true)
+        redraw()
     }
 
-    func dragChanged(_ translation: CGSize) {
+    private func movementDistance(_ translation: CGSize) -> CGFloat {
+        hypot(translation.width, translation.height)
+    }
+
+    private func dragChanged(_ translation: CGSize) {
         guard state == .paused else { return }
         if abs(translation.width) > abs(translation.height), abs(translation.width) > 40 {
             let steps = scrubSteps(deltaX: translation.width)
@@ -108,7 +183,7 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
-    func dragEnded(_ translation: CGSize) {
+    private func dragEnded(_ translation: CGSize) {
         if state == .menu {
             handleMenuDragEnded(translation)
             return
@@ -126,7 +201,7 @@ final class ReaderViewModel: ObservableObject {
         redraw()
     }
 
-    func tap() {
+    private func tap() {
         if state == .menu {
             selectMenuItem()
         }
@@ -260,6 +335,7 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func redraw() {
+        guard renderSize.width >= 1, renderSize.height >= 1 else { return }
         let ctx: RenderContext
         if state == .menu {
             ctx = menuRenderContext()
@@ -277,7 +353,7 @@ final class ReaderViewModel: ObservableObject {
                 contextWords: contextVisible ? contextWords() : []
             )
         }
-        renderImage = renderer.render(ctx)
+        renderImage = renderer.render(ctx, size: renderSize)
     }
 
     private func menuRenderContext() -> RenderContext {
@@ -327,7 +403,8 @@ final class ReaderViewModel: ObservableObject {
     }
 
     private func renderStatus(_ title: String, line1: String, line2: String) {
-        renderImage = renderer.render(RenderContext(state: .paused, word: "", beforeText: "", afterText: "", chapterLabel: "", progressPercent: 0, settings: settings, showFooter: false, statusTitle: title, statusLine1: line1, statusLine2: line2))
+        let size = renderSize.width >= 1 ? renderSize : RsvpRenderer.logicalSize
+        renderImage = renderer.render(RenderContext(state: .paused, word: "", beforeText: "", afterText: "", chapterLabel: "", progressPercent: 0, settings: settings, showFooter: false, statusTitle: title, statusLine1: line1, statusLine2: line2), size: size)
     }
 
     private func saveProgress(force: Bool) {
@@ -424,4 +501,3 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 }
-
