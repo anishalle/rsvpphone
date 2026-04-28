@@ -353,3 +353,7 @@ private struct PanelButtonStyle: ButtonStyle {
         return Color.white.opacity(0.08)
     }
 }
+
+#Preview(traits: .landscapeRight) {
+    ContentView()
+}
